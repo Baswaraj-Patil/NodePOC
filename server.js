@@ -115,13 +115,17 @@ app.post("/canvas", (req, res) => {
     console.log(JSON.stringify(decoded, null, 2));
 
     const environment = decoded.context?.environment || {};
-    const params = environment.parameters;
+    const params = decoded.context.environment.parameters;
 
     let opportunityId;
-
+    
     if (typeof params === "string") {
-      opportunityId = params;
-    } else if (params && typeof params === "object") {
+      try {
+        opportunityId = JSON.parse(params).oppId;
+      } catch {
+        opportunityId = params;
+      }
+    } else {
       opportunityId = params.oppId;
     }
 
