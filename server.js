@@ -108,8 +108,6 @@ function renderHtml(signedRequestJson) {
       <strong id="oppId">Loading...</strong>
     </p>
 
-    <div id="message"></div>
-
     <table>
       <thead>
         <tr>
@@ -123,6 +121,8 @@ function renderHtml(signedRequestJson) {
     </table>
 
     <button id="submitBtn">Send Selected Products to Salesforce</button>
+    <div id="message"></div>
+
   </div>
 
 <script>
