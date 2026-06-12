@@ -118,7 +118,7 @@ app.post("/canvas", (req, res) => {
     const params = decoded.context.environment.parameters;
 
     let opportunityId =
-  environment.recordId ||
+  environment.record.Id ||
   environment.parameters ||
   null;
     
