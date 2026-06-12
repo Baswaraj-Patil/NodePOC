@@ -103,57 +103,18 @@ app.get("/", (req, res) => {
 
 app.post("/canvas", (req, res) => {
   try {
-    console.log("Canvas POST received");
-    console.log("Body keys:", Object.keys(req.body));
+    const signedRequest = req.body.signed_request;
 
     const decoded = verifyAndDecodeSignedRequest(
-      req.body.signed_request,
+      signedRequest,
       process.env.SALESFORCE_CONSUMER_SECRET
     );
 
-    console.log("Decoded Canvas payload:");
-    console.log(JSON.stringify(decoded, null, 2));
-
-    const environment = decoded.context?.environment || {};
-    const params = decoded.context.environment.parameters;
-
-    let opportunityId =
-  environment.record.Id ||
-  environment.parameters ||
-  null;
-    
-    /*if (typeof params === "string") {
-      try {
-        opportunityId = JSON.parse(params).oppId;
-      } catch {
-        opportunityId = params;
-      }
-    } else {
-      opportunityId = params.oppId;
-    }*/
-
-    if (!opportunityId) {
-      throw new Error("Opportunity Id was not found in Canvas parameters");
-    }
-
-    const client = decoded.client || {};
-
-    if (!client.oauthToken || !client.instanceUrl) {
-      throw new Error("Canvas signed request does not include OAuth token or instance URL");
-    }
-
-    res.send(
-      renderHtml({
-        opportunityId,
-        accessToken: client.oauthToken,
-        instanceUrl: client.instanceUrl
-      })
-    );
+    res.send(renderHtml({
+      signedRequestJson: decoded
+    }));
   } catch (err) {
-    console.error("Canvas authentication failed:", err.message);
-    res
-      .status(401)
-      .send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
+    res.status(401).send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
   }
 });
 
@@ -259,161 +220,168 @@ app.post("/api/opportunity-lines", async (req, res) => {
   }
 });
 
-function renderHtml({ opportunityId, accessToken, instanceUrl }) {
+function renderHtml({ signedRequestJson }) {
   return `
 <!doctype html>
 <html>
 <head>
   <title>Product Pricing Canvas</title>
   <link rel="stylesheet" href="/public/app.css" />
+  <script src="/canvas/sdk/js/canvas-all.js"></script>
 </head>
 <body>
   <div class="container">
-    <h2>Product Pricing POC</h2>
-    <p>Opportunity Id: <strong>${opportunityId}</strong></p>
-
+    <h2>Product Pricing Canvas SDK POC</h2>
+    <p>Opportunity Id: <strong id="oppId"></strong></p>
     <div id="message"></div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>Select</th>
-          <th>Product</th>
-          <th>Price</th>
-          <th>Quantity</th>
-        </tr>
-      </thead>
-      <tbody id="productRows"></tbody>
-    </table>
-
-    <button id="submitBtn">Send Selected Products to Salesforce</button>
+    <div id="products"></div>
+    <button id="submitBtn">Send Selected Products</button>
   </div>
 
 <script>
-const SALESFORCE = {
-  opportunityId: "${opportunityId}",
-  accessToken: "${accessToken}",
-  instanceUrl: "${instanceUrl}"
-};
+const sr = ${JSON.stringify(signedRequestJson)};
+const client = sr.client;
+const context = sr.context;
 
 const message = document.getElementById("message");
-const rows = document.getElementById("productRows");
+const productsDiv = document.getElementById("products");
 
-function showMessage(text, type) {
-  message.className = type || "";
+function showMessage(text) {
   message.innerText = text;
 }
 
-async function sfRequest(path, options = {}) {
-  const response = await fetch(SALESFORCE.instanceUrl + path, {
-    ...options,
-    headers: {
-      Authorization: "Bearer " + SALESFORCE.accessToken,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
+function getOpportunityId() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const idFromUrl = urlParams.get("id");
+
+  if (idFromUrl && idFromUrl.startsWith("006")) {
+    return idFromUrl;
+  }
+
+  if (context.environment && context.environment.recordId) {
+    return context.environment.recordId;
+  }
+
+  return null;
+}
+
+const opportunityId = getOpportunityId();
+document.getElementById("oppId").innerText = opportunityId || "Not found";
+
+function canvasAjax(path, method, body, callback) {
+  Sfdc.canvas.client.ajax(path, {
+    client: client,
+    method: method || "GET",
+    contentType: "application/json",
+    data: body ? JSON.stringify(body) : null,
+    success: function(data) {
+      callback(null, data.payload);
+    },
+    failure: function(data) {
+      console.error(data);
+      callback(data);
     }
   });
-
-  const text = await response.text();
-  let body;
-
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
-
-  if (!response.ok) {
-    console.error(body);
-    throw new Error("Salesforce API error " + response.status);
-  }
-
-  return body;
 }
 
 async function loadProducts() {
-  try {
-    const opp = await sfRequest(
-      "/services/data/v60.0/sobjects/Opportunity/" +
-      SALESFORCE.opportunityId +
-      "?fields=Id,Name,Pricebook2Id"
-    );
-
-    if (!opp.Pricebook2Id) {
-      showMessage("Opportunity does not have a Price Book. Add Standard Price Book first.", "error");
-      return;
-    }
-
-    const query = \`
-      SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode
-      FROM PricebookEntry
-      WHERE IsActive = true
-      AND Product2.IsActive = true
-      AND Pricebook2Id = '\${opp.Pricebook2Id}'
-      ORDER BY Product2.Name
-    \`;
-
-    const data = await sfRequest(
-      "/services/data/v60.0/query?q=" + encodeURIComponent(query)
-    );
-
-    rows.innerHTML = data.records.map((p) => \`
-      <tr>
-        <td>
-          <input type="checkbox"
-                 data-id="\${p.Id}"
-                 data-price="\${p.UnitPrice}" />
-        </td>
-        <td>\${p.Product2.Name}</td>
-        <td>\${p.UnitPrice}</td>
-        <td>
-          <input type="number"
-                 min="1"
-                 value="1"
-                 class="qty"
-                 data-id="\${p.Id}" />
-        </td>
-      </tr>
-    \`).join("");
-  } catch (e) {
-    showMessage(e.message, "error");
+  if (!opportunityId) {
+    showMessage("Could not determine Opportunity Id.");
+    return;
   }
+
+  canvasAjax(
+    "/services/data/v60.0/sobjects/Opportunity/" +
+      opportunityId +
+      "?fields=Id,Name,Pricebook2Id",
+    "GET",
+    null,
+    function(err, opp) {
+      if (err) {
+        showMessage("Failed to read Opportunity.");
+        return;
+      }
+
+      if (!opp.Pricebook2Id) {
+        showMessage("Add a Price Book to this Opportunity first.");
+        return;
+      }
+
+      const soql =
+        "SELECT Id, UnitPrice, Product2.Name " +
+        "FROM PricebookEntry " +
+        "WHERE IsActive = true " +
+        "AND Product2.IsActive = true " +
+        "AND Pricebook2Id = '" + opp.Pricebook2Id + "' " +
+        "ORDER BY Product2.Name";
+
+      canvasAjax(
+        "/services/data/v60.0/query?q=" + encodeURIComponent(soql),
+        "GET",
+        null,
+        function(err2, result) {
+          if (err2) {
+            showMessage("Failed to load products.");
+            return;
+          }
+
+          productsDiv.innerHTML = result.records.map(function(p) {
+            return \`
+              <div>
+                <input type="checkbox"
+                       data-pbe="\${p.Id}"
+                       data-price="\${p.UnitPrice}" />
+                \${p.Product2.Name} - $\${p.UnitPrice}
+                Qty: <input type="number"
+                            min="1"
+                            value="1"
+                            data-qty="\${p.Id}" />
+              </div>
+            \`;
+          }).join("");
+        }
+      );
+    }
+  );
 }
 
-document.getElementById("submitBtn").addEventListener("click", async () => {
-  try {
-    const selected = [...document.querySelectorAll("input[type='checkbox']:checked")];
+document.getElementById("submitBtn").addEventListener("click", function() {
+  const selected = Array.from(document.querySelectorAll("input[type='checkbox']:checked"));
 
-    const records = selected.map((box) => {
-      const id = box.dataset.id;
-      const qty = document.querySelector(\`.qty[data-id="\${id}"]\`).value;
-
-      return {
-        attributes: { type: "OpportunityLineItem" },
-        OpportunityId: SALESFORCE.opportunityId,
-        PricebookEntryId: id,
-        Quantity: Number(qty),
-        UnitPrice: Number(box.dataset.price)
-      };
-    });
-
-    if (!records.length) {
-      showMessage("Select at least one product.", "error");
-      return;
-    }
-
-    await sfRequest("/services/data/v60.0/composite/sobjects", {
-      method: "POST",
-      body: JSON.stringify({
-        allOrNone: true,
-        records
-      })
-    });
-
-    showMessage("Products added successfully. Refresh the Opportunity page.", "success");
-  } catch (e) {
-    showMessage(e.message, "error");
+  if (!selected.length) {
+    showMessage("Select at least one product.");
+    return;
   }
+
+  const records = selected.map(function(box) {
+    const pbeId = box.dataset.pbe;
+    const qty = document.querySelector("[data-qty='" + pbeId + "']").value;
+
+    return {
+      attributes: { type: "OpportunityLineItem" },
+      OpportunityId: opportunityId,
+      PricebookEntryId: pbeId,
+      Quantity: Number(qty),
+      UnitPrice: Number(box.dataset.price)
+    };
+  });
+
+  canvasAjax(
+    "/services/data/v60.0/composite/sobjects",
+    "POST",
+    {
+      allOrNone: true,
+      records: records
+    },
+    function(err) {
+      if (err) {
+        showMessage("Failed to create Opportunity Products.");
+        return;
+      }
+
+      showMessage("Products added successfully. Refresh the Opportunity.");
+    }
+  );
 });
 
 loadProducts();
