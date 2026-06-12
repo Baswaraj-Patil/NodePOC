@@ -100,6 +100,7 @@ async function sfRequest(req, path, options = {}) {
 app.get("/", (req, res) => {
   res.send("Node app is running. Use Salesforce Canvas to open /canvas.");
 });
+
 app.post("/canvas", async (req, res) => {
   try {
     const decoded = verifyAndDecodeSignedRequest(
@@ -111,24 +112,17 @@ app.post("/canvas", async (req, res) => {
     const context = decoded.context || {};
     const environment = context.environment || {};
 
-    const opportunityId =
-      environment.parameters ||
-      req.query.opportunityId ||
-      null;
+    const opportunityId = environment.parameters;
 
     if (!client.oauthToken || !client.instanceUrl) {
       throw new Error("Canvas signed request does not include OAuth token or instance URL");
     }
 
-    req.session.sf = {
+    res.send(renderHtml({
+      opportunityId,
       accessToken: client.oauthToken,
-      instanceUrl: client.instanceUrl,
-      userId: context.user && context.user.userId,
-      organizationId: context.organization && context.organization.organizationId,
-      opportunityId
-    };
-
-    res.send(renderHtml({ opportunityId }));
+      instanceUrl: client.instanceUrl
+    }));
   } catch (err) {
     console.error(err);
     res.status(401).send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
@@ -237,7 +231,7 @@ app.post("/api/opportunity-lines", async (req, res) => {
   }
 });
 
-function renderHtml({ opportunityId }) {
+function renderHtml({ opportunityId, accessToken, instanceUrl }) {
   return `
 <!doctype html>
 <html>
@@ -248,7 +242,7 @@ function renderHtml({ opportunityId }) {
 <body>
   <div class="container">
     <h2>Product Pricing POC</h2>
-    <p>Opportunity Id: <strong>${opportunityId || "Not found"}</strong></p>
+    <p>Opportunity Id: <strong>${opportunityId}</strong></p>
 
     <div id="message"></div>
 
@@ -268,6 +262,12 @@ function renderHtml({ opportunityId }) {
   </div>
 
 <script>
+const SALESFORCE = {
+  opportunityId: "${opportunityId}",
+  accessToken: "${accessToken}",
+  instanceUrl: "${instanceUrl}"
+};
+
 const message = document.getElementById("message");
 const rows = document.getElementById("productRows");
 
@@ -276,31 +276,74 @@ function showMessage(text, type) {
   message.innerText = text;
 }
 
+async function sfRequest(path, options = {}) {
+  const response = await fetch(SALESFORCE.instanceUrl + path, {
+    ...options,
+    headers: {
+      Authorization: "Bearer " + SALESFORCE.accessToken,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  const text = await response.text();
+  let body;
+
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+
+  if (!response.ok) {
+    console.error(body);
+    throw new Error("Salesforce API error " + response.status);
+  }
+
+  return body;
+}
+
 async function loadProducts() {
   try {
-    const response = await fetch("/api/products");
-    const data = await response.json();
+    const opp = await sfRequest(
+      "/services/data/v60.0/sobjects/Opportunity/" +
+      SALESFORCE.opportunityId +
+      "?fields=Id,Name,Pricebook2Id"
+    );
 
-    if (!response.ok) {
-      showMessage(data.error || "Failed to load products", "error");
+    if (!opp.Pricebook2Id) {
+      showMessage("Opportunity does not have a Price Book. Add Standard Price Book first.", "error");
       return;
     }
 
-    rows.innerHTML = data.products.map((p) => \`
+    const query = \`
+      SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode
+      FROM PricebookEntry
+      WHERE IsActive = true
+      AND Product2.IsActive = true
+      AND Pricebook2Id = '\${opp.Pricebook2Id}'
+      ORDER BY Product2.Name
+    \`;
+
+    const data = await sfRequest(
+      "/services/data/v60.0/query?q=" + encodeURIComponent(query)
+    );
+
+    rows.innerHTML = data.records.map((p) => \`
       <tr>
         <td>
           <input type="checkbox"
-                 data-id="\${p.pricebookEntryId}"
-                 data-price="\${p.unitPrice}" />
+                 data-id="\${p.Id}"
+                 data-price="\${p.UnitPrice}" />
         </td>
-        <td>\${p.name}</td>
-        <td>$\${p.unitPrice}</td>
+        <td>\${p.Product2.Name}</td>
+        <td>\${p.UnitPrice}</td>
         <td>
           <input type="number"
                  min="1"
                  value="1"
                  class="qty"
-                 data-id="\${p.pricebookEntryId}" />
+                 data-id="\${p.Id}" />
         </td>
       </tr>
     \`).join("");
@@ -310,40 +353,39 @@ async function loadProducts() {
 }
 
 document.getElementById("submitBtn").addEventListener("click", async () => {
-  const selected = [...document.querySelectorAll("input[type='checkbox']:checked")];
+  try {
+    const selected = [...document.querySelectorAll("input[type='checkbox']:checked")];
 
-  const items = selected.map((box) => {
-    const id = box.dataset.id;
-    const qty = document.querySelector(\`.qty[data-id="\${id}"]\`).value;
+    const records = selected.map((box) => {
+      const id = box.dataset.id;
+      const qty = document.querySelector(\`.qty[data-id="\${id}"]\`).value;
 
-    return {
-      pricebookEntryId: id,
-      unitPrice: Number(box.dataset.price),
-      quantity: Number(qty)
-    };
-  });
+      return {
+        attributes: { type: "OpportunityLineItem" },
+        OpportunityId: SALESFORCE.opportunityId,
+        PricebookEntryId: id,
+        Quantity: Number(qty),
+        UnitPrice: Number(box.dataset.price)
+      };
+    });
 
-  if (!items.length) {
-    showMessage("Select at least one product.", "error");
-    return;
+    if (!records.length) {
+      showMessage("Select at least one product.", "error");
+      return;
+    }
+
+    await sfRequest("/services/data/v60.0/composite/sobjects", {
+      method: "POST",
+      body: JSON.stringify({
+        allOrNone: true,
+        records
+      })
+    });
+
+    showMessage("Products added successfully. Refresh the Opportunity page.", "success");
+  } catch (e) {
+    showMessage(e.message, "error");
   }
-
-  const response = await fetch("/api/opportunity-lines", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ items })
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    showMessage(data.error || "Failed to create Opportunity Products.", "error");
-    return;
-  }
-
-  showMessage("Products added to Opportunity successfully. Refresh Salesforce record page.", "success");
 });
 
 loadProducts();
