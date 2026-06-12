@@ -2,28 +2,11 @@ require("dotenv").config();
 
 const crypto = require("crypto");
 const express = require("express");
-const session = require("express-session");
-const cookieParser = require("cookie-parser");
-const fetch = require("node-fetch");
 
 const app = express();
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(cookieParser());
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "local-dev-secret",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: process.env.NODE_ENV === "production",
-      httpOnly: true,
-      sameSite: "none"
-    }
-  })
-);
-
 app.use("/public", express.static("public"));
 
 function base64UrlDecode(input) {
@@ -38,6 +21,7 @@ function verifyAndDecodeSignedRequest(signedRequest, consumerSecret) {
   }
 
   const [encodedSig, encodedEnvelope] = signedRequest.split(".");
+
   if (!encodedSig || !encodedEnvelope) {
     throw new Error("Invalid signed_request format");
   }
@@ -60,206 +44,133 @@ function verifyAndDecodeSignedRequest(signedRequest, consumerSecret) {
   return JSON.parse(json);
 }
 
-function getSalesforceAuth(req) {
-  if (!req.session.sf) {
-    throw new Error("Salesforce session not initialized");
-  }
-
-  return req.session.sf;
-}
-
-async function sfRequest(req, path, options = {}) {
-  const sf = getSalesforceAuth(req);
-
-  const response = await fetch(`${sf.instanceUrl}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${sf.accessToken}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  const text = await response.text();
-
-  let body;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
-  }
-
-  if (!response.ok) {
-    console.error("Salesforce API error", response.status, body);
-    throw new Error(`Salesforce API error ${response.status}`);
-  }
-
-  return body;
-}
-
 app.get("/", (req, res) => {
-  res.send("Node app is running. Use Salesforce Canvas to open /canvas.");
-});
-
-app.post("/canvas", (req, res) => {
-  try {
-    const signedRequest = req.body.signed_request;
-
-    const decoded = verifyAndDecodeSignedRequest(
-      signedRequest,
-      process.env.SALESFORCE_CONSUMER_SECRET
-    );
-
-    res.send(renderHtml({
-      signedRequestJson: decoded
-    }));
-  } catch (err) {
-    res.status(401).send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
-  }
+  res.send("Salesforce Canvas Product Pricing POC is running.");
 });
 
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/context", (req, res) => {
+app.post("/canvas", (req, res) => {
   try {
-    const sf = getSalesforceAuth(req);
-    res.json({
-      opportunityId: sf.opportunityId,
-      instanceUrl: sf.instanceUrl,
-      userId: sf.userId,
-      organizationId: sf.organizationId
-    });
-  } catch (err) {
-    res.status(401).json({ error: err.message });
-  }
-});
+    console.log("Canvas POST received");
+    console.log("Body keys:", Object.keys(req.body));
 
-app.get("/api/products", async (req, res) => {
-  try {
-    const sf = getSalesforceAuth(req);
-
-    const opp = await sfRequest(
-      req,
-      `/services/data/v60.0/sobjects/Opportunity/${sf.opportunityId}?fields=Id,Name,Pricebook2Id`
+    const decoded = verifyAndDecodeSignedRequest(
+      req.body.signed_request,
+      process.env.SALESFORCE_CONSUMER_SECRET
     );
 
-    if (!opp.Pricebook2Id) {
-      return res.status(400).json({
-        error: "Opportunity does not have a Price Book. Add a Price Book to the Opportunity first."
-      });
-    }
+    console.log("Canvas context environment:");
+    console.log(JSON.stringify(decoded.context?.environment || {}, null, 2));
 
-    const query = `
-      SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode
-      FROM PricebookEntry
-      WHERE IsActive = true
-      AND Product2.IsActive = true
-      AND Pricebook2Id = '${opp.Pricebook2Id}'
-      ORDER BY Product2.Name
-    `;
-
-    const result = await sfRequest(
-      req,
-      `/services/data/v60.0/query?q=${encodeURIComponent(query)}`
-    );
-
-    res.json({
-      opportunity: opp,
-      products: result.records.map((r) => ({
-        pricebookEntryId: r.Id,
-        productId: r.Product2.Id,
-        name: r.Product2.Name,
-        productCode: r.Product2.ProductCode,
-        unitPrice: r.UnitPrice
-      }))
-    });
+    res.send(renderHtml(decoded));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("Canvas authentication failed:", err);
+    res.status(401).send(`
+      <h2>Canvas authentication failed</h2>
+      <pre>${escapeHtml(err.message)}</pre>
+    `);
   }
 });
 
-app.post("/api/opportunity-lines", async (req, res) => {
-  try {
-    const sf = getSalesforceAuth(req);
-    const { items } = req.body;
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "No selected products." });
-    }
-
-    const created = [];
-
-    for (const item of items) {
-      const payload = {
-        OpportunityId: sf.opportunityId,
-        PricebookEntryId: item.pricebookEntryId,
-        Quantity: Number(item.quantity || 1),
-        UnitPrice: Number(item.unitPrice)
-      };
-
-      const result = await sfRequest(
-        req,
-        `/services/data/v60.0/sobjects/OpportunityLineItem`,
-        {
-          method: "POST",
-          body: JSON.stringify(payload)
-        }
-      );
-
-      created.push(result);
-    }
-
-    res.json({
-      success: true,
-      created
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/canvas", (req, res) => {
+  res.send(`
+    <h2>Canvas endpoint is working</h2>
+    <p>This endpoint must be opened from Salesforce Canvas because Salesforce sends signed_request using POST.</p>
+  `);
 });
 
-function renderHtml({ signedRequestJson }) {
+function renderHtml(signedRequestJson) {
+  const safeSignedRequestJson = JSON.stringify(signedRequestJson).replace(
+    /</g,
+    "\\u003c"
+  );
+
   return `
 <!doctype html>
 <html>
 <head>
-  <title>Product Pricing Canvas</title>
+  <meta charset="utf-8" />
+  <title>Product Pricing Canvas SDK POC</title>
   <link rel="stylesheet" href="/public/app.css" />
-  <script src="/canvas/sdk/js/canvas-all.js"></script>
+
+  <!-- Salesforce Canvas SDK -->
+  <script src="https://login.salesforce.com/canvas/sdk/js/canvas-all.js"></script>
 </head>
 <body>
   <div class="container">
     <h2>Product Pricing Canvas SDK POC</h2>
-    <p>Opportunity Id: <strong id="oppId"></strong></p>
+
+    <p>
+      Opportunity Id:
+      <strong id="oppId">Loading...</strong>
+    </p>
+
     <div id="message"></div>
-    <div id="products"></div>
-    <button id="submitBtn">Send Selected Products</button>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Select</th>
+          <th>Product</th>
+          <th>Unit Price</th>
+          <th>Quantity</th>
+        </tr>
+      </thead>
+      <tbody id="productRows"></tbody>
+    </table>
+
+    <button id="submitBtn">Send Selected Products to Salesforce</button>
   </div>
 
 <script>
-const sr = ${JSON.stringify(signedRequestJson)};
+const sr = ${safeSignedRequestJson};
 const client = sr.client;
-const context = sr.context;
+const context = sr.context || {};
+const environment = context.environment || {};
 
 const message = document.getElementById("message");
-const productsDiv = document.getElementById("products");
+const productRows = document.getElementById("productRows");
+const submitBtn = document.getElementById("submitBtn");
 
-function showMessage(text) {
+function showMessage(text, type) {
+  message.className = type || "";
   message.innerText = text;
 }
 
 function getOpportunityId() {
   const urlParams = new URLSearchParams(window.location.search);
-  const idFromUrl = urlParams.get("id");
 
+  const idFromUrl = urlParams.get("id");
   if (idFromUrl && idFromUrl.startsWith("006")) {
     return idFromUrl;
   }
 
-  if (context.environment && context.environment.recordId) {
-    return context.environment.recordId;
+  if (environment.recordId && environment.recordId.startsWith("006")) {
+    return environment.recordId;
+  }
+
+  if (environment.parameters && typeof environment.parameters === "string") {
+    if (environment.parameters.startsWith("006")) {
+      return environment.parameters;
+    }
+
+    try {
+      const parsed = JSON.parse(environment.parameters.replace(/&quot;/g, '"'));
+      if (parsed.oppId && parsed.oppId.startsWith("006")) {
+        return parsed.oppId;
+      }
+    } catch (e) {}
+  }
+
+  if (
+    environment.parameters &&
+    typeof environment.parameters === "object" &&
+    environment.parameters.oppId
+  ) {
+    return environment.parameters.oppId;
   }
 
   return null;
@@ -278,37 +189,39 @@ function canvasAjax(path, method, body, callback) {
       callback(null, data.payload);
     },
     failure: function(data) {
-      console.error(data);
+      console.error("Canvas AJAX failure:", data);
       callback(data);
     }
   });
 }
 
-async function loadProducts() {
+function loadProducts() {
   if (!opportunityId) {
-    showMessage("Could not determine Opportunity Id.");
+    showMessage("Could not determine Opportunity Id from Canvas context or URL.", "error");
     return;
   }
 
+  showMessage("Loading Opportunity and products...", "");
+
   canvasAjax(
     "/services/data/v60.0/sobjects/Opportunity/" +
-      opportunityId +
+      encodeURIComponent(opportunityId) +
       "?fields=Id,Name,Pricebook2Id",
     "GET",
     null,
     function(err, opp) {
       if (err) {
-        showMessage("Failed to read Opportunity.");
+        showMessage("Failed to read Opportunity. Check browser console.", "error");
         return;
       }
 
       if (!opp.Pricebook2Id) {
-        showMessage("Add a Price Book to this Opportunity first.");
+        showMessage("This Opportunity does not have a Price Book. Add Standard Price Book first.", "error");
         return;
       }
 
       const soql =
-        "SELECT Id, UnitPrice, Product2.Name " +
+        "SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode " +
         "FROM PricebookEntry " +
         "WHERE IsActive = true " +
         "AND Product2.IsActive = true " +
@@ -321,50 +234,71 @@ async function loadProducts() {
         null,
         function(err2, result) {
           if (err2) {
-            showMessage("Failed to load products.");
+            showMessage("Failed to load products. Check browser console.", "error");
             return;
           }
 
-          productsDiv.innerHTML = result.records.map(function(p) {
+          if (!result.records || result.records.length === 0) {
+            showMessage("No active products found for this Opportunity Price Book.", "error");
+            return;
+          }
+
+          productRows.innerHTML = result.records.map(function(p) {
             return \`
-              <div>
-                <input type="checkbox"
-                       data-pbe="\${p.Id}"
-                       data-price="\${p.UnitPrice}" />
-                \${p.Product2.Name} - $\${p.UnitPrice}
-                Qty: <input type="number"
-                            min="1"
-                            value="1"
-                            data-qty="\${p.Id}" />
-              </div>
+              <tr>
+                <td>
+                  <input
+                    type="checkbox"
+                    data-pbe="\${p.Id}"
+                    data-price="\${p.UnitPrice}"
+                  />
+                </td>
+                <td>\${escapeHtmlClient(p.Product2.Name)}</td>
+                <td>\${p.UnitPrice}</td>
+                <td>
+                  <input
+                    type="number"
+                    min="1"
+                    value="1"
+                    class="qty"
+                    data-qty="\${p.Id}"
+                  />
+                </td>
+              </tr>
             \`;
           }).join("");
+
+          showMessage("Products loaded.", "success");
         }
       );
     }
   );
 }
 
-document.getElementById("submitBtn").addEventListener("click", function() {
-  const selected = Array.from(document.querySelectorAll("input[type='checkbox']:checked"));
+submitBtn.addEventListener("click", function() {
+  const selected = Array.from(
+    document.querySelectorAll("input[type='checkbox']:checked")
+  );
 
   if (!selected.length) {
-    showMessage("Select at least one product.");
+    showMessage("Select at least one product.", "error");
     return;
   }
 
   const records = selected.map(function(box) {
     const pbeId = box.dataset.pbe;
-    const qty = document.querySelector("[data-qty='" + pbeId + "']").value;
+    const qtyInput = document.querySelector("[data-qty='" + pbeId + "']");
 
     return {
       attributes: { type: "OpportunityLineItem" },
       OpportunityId: opportunityId,
       PricebookEntryId: pbeId,
-      Quantity: Number(qty),
+      Quantity: Number(qtyInput.value || 1),
       UnitPrice: Number(box.dataset.price)
     };
   });
+
+  showMessage("Sending products to Salesforce...", "");
 
   canvasAjax(
     "/services/data/v60.0/composite/sobjects",
@@ -373,16 +307,26 @@ document.getElementById("submitBtn").addEventListener("click", function() {
       allOrNone: true,
       records: records
     },
-    function(err) {
+    function(err, result) {
       if (err) {
-        showMessage("Failed to create Opportunity Products.");
+        showMessage("Failed to create Opportunity Products. Check browser console.", "error");
         return;
       }
 
-      showMessage("Products added successfully. Refresh the Opportunity.");
+      showMessage("Products added successfully. Refresh the Opportunity page.", "success");
+      console.log("Created records:", result);
     }
   );
 });
+
+function escapeHtmlClient(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 loadProducts();
 </script>
@@ -391,7 +335,17 @@ loadProducts();
 `;
 }
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 const port = process.env.PORT || 3000;
+
 app.listen(port, () => {
-  console.log(`Canvas app running on port ${port}`);
+  console.log("Canvas app running on port " + port);
 });
