@@ -151,6 +151,10 @@ function getOpportunityId() {
   if (environment.recordId && environment.recordId.startsWith("006")) {
     return environment.recordId;
   }
+  
+  if (environment.record && environment.record.Id && environment.record.Id.startsWith("006")) {
+    return environment.record.Id;
+  }
 
   if (environment.parameters && typeof environment.parameters === "string") {
     if (environment.parameters.startsWith("006")) {
