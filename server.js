@@ -103,6 +103,10 @@ app.get("/", (req, res) => {
 
 app.post("/canvas", async (req, res) => {
   try {
+    
+    console.log(
+      JSON.stringify(req, null, 2)
+    );
     const decoded = verifyAndDecodeSignedRequest(
       req.body.signed_request,
       process.env.SALESFORCE_CONSUMER_SECRET
