@@ -117,9 +117,12 @@ app.post("/canvas", (req, res) => {
     const environment = decoded.context?.environment || {};
     const params = decoded.context.environment.parameters;
 
-    let opportunityId;
+    let opportunityId =
+  environment.recordId ||
+  environment.parameters ||
+  null;
     
-    if (typeof params === "string") {
+    /*if (typeof params === "string") {
       try {
         opportunityId = JSON.parse(params).oppId;
       } catch {
@@ -127,7 +130,7 @@ app.post("/canvas", (req, res) => {
       }
     } else {
       opportunityId = params.oppId;
-    }
+    }*/
 
     if (!opportunityId) {
       throw new Error("Opportunity Id was not found in Canvas parameters");
