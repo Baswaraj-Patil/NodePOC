@@ -108,6 +108,10 @@ app.post("/canvas", async (req, res) => {
       process.env.SALESFORCE_CONSUMER_SECRET
     );
 
+    console.log(
+      JSON.stringify(decoded, null, 2)
+    );
+
     const client = decoded.client || {};
     const context = decoded.context || {};
     const environment = context.environment || {};
