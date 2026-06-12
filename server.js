@@ -97,6 +97,9 @@ async function sfRequest(req, path, options = {}) {
   return body;
 }
 
+app.get("/", (req, res) => {
+  res.send("Node app is running. Use Salesforce Canvas to open /canvas.");
+});
 app.post("/canvas", async (req, res) => {
   try {
     const decoded = verifyAndDecodeSignedRequest(
