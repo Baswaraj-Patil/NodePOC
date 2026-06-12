@@ -101,39 +101,52 @@ app.get("/", (req, res) => {
   res.send("Node app is running. Use Salesforce Canvas to open /canvas.");
 });
 
-app.post("/canvas", async (req, res) => {
+app.post("/canvas", (req, res) => {
   try {
-    
-    console.log(
-      JSON.stringify(req, null, 2)
-    );
+    console.log("Canvas POST received");
+    console.log("Body keys:", Object.keys(req.body));
+
     const decoded = verifyAndDecodeSignedRequest(
       req.body.signed_request,
       process.env.SALESFORCE_CONSUMER_SECRET
     );
 
-    console.log(
-      JSON.stringify(decoded, null, 2)
-    );
+    console.log("Decoded Canvas payload:");
+    console.log(JSON.stringify(decoded, null, 2));
+
+    const environment = decoded.context?.environment || {};
+    const params = environment.parameters;
+
+    let opportunityId;
+
+    if (typeof params === "string") {
+      opportunityId = params;
+    } else if (params && typeof params === "object") {
+      opportunityId = params.oppId;
+    }
+
+    if (!opportunityId) {
+      throw new Error("Opportunity Id was not found in Canvas parameters");
+    }
 
     const client = decoded.client || {};
-    const context = decoded.context || {};
-    const environment = context.environment || {};
-
-    const opportunityId = environment.parameters;
 
     if (!client.oauthToken || !client.instanceUrl) {
       throw new Error("Canvas signed request does not include OAuth token or instance URL");
     }
 
-    res.send(renderHtml({
-      opportunityId,
-      accessToken: client.oauthToken,
-      instanceUrl: client.instanceUrl
-    }));
+    res.send(
+      renderHtml({
+        opportunityId,
+        accessToken: client.oauthToken,
+        instanceUrl: client.instanceUrl
+      })
+    );
   } catch (err) {
-    console.error(err);
-    res.status(401).send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
+    console.error("Canvas authentication failed:", err.message);
+    res
+      .status(401)
+      .send(`<h2>Canvas authentication failed</h2><pre>${err.message}</pre>`);
   }
 });
 
