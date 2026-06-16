@@ -1,0 +1,413 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pricing Engine</title>
+  <link rel="stylesheet" href="/public/app.css" />
+
+  <!-- Salesforce Canvas SDK -->
+  <script src="https://login.salesforce.com/canvas/sdk/js/canvas-all.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">PE</div>
+        <div class="brand-text">
+          <h1>Pricing Engine</h1>
+          <p class="subtitle">External pricing app &middot; Salesforce Canvas</p>
+        </div>
+      </div>
+      <div class="opp-meta">
+        <span class="meta-label">Opportunity Id</span>
+        <span id="oppId" class="meta-value">Loading&hellip;</span>
+      </div>
+    </header>
+
+    <div id="message" class="toast" hidden></div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Opportunity</h2>
+        <span class="card-hint">Edit fields and sync back to Salesforce</span>
+      </div>
+
+      <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input id="oppName" type="text" readonly />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Stage</span>
+          <select id="oppStage"></select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Amount <em>(rolls up from products)</em></span>
+          <input id="oppAmount" type="text" readonly />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Close Date</span>
+          <input id="oppCloseDate" type="date" />
+        </label>
+
+        <label class="field">
+          <span class="field-label">Next Step</span>
+          <input id="oppNextStep" type="text" placeholder="e.g. Review pricing" />
+        </label>
+
+        <label class="field field-wide">
+          <span class="field-label">Description</span>
+          <textarea id="oppDescription" rows="3" placeholder="Notes synced from the pricing engine"></textarea>
+        </label>
+      </div>
+
+      <div class="card-actions">
+        <button id="saveOppBtn" class="btn btn-primary">Save Opportunity</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Products</h2>
+        <span class="card-hint">Select products to add as line items</span>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-select">Select</th>
+              <th>Product</th>
+              <th>Unit Price</th>
+              <th class="col-qty">Quantity</th>
+            </tr>
+          </thead>
+          <tbody id="productRows">
+            <tr class="empty-row"><td colspan="4">Loading products&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card-actions">
+        <button id="submitBtn" class="btn btn-primary">Add Selected Products</button>
+      </div>
+    </section>
+  </div>
+
+<script>
+const sr = __SIGNED_REQUEST_JSON__;
+const client = sr.client;
+const context = sr.context || {};
+const environment = context.environment || {};
+
+const API = "/services/data/v60.0";
+const STAGES = [
+  "Prospecting",
+  "Qualification",
+  "Needs Analysis",
+  "Value Proposition",
+  "Id. Decision Makers",
+  "Perception Analysis",
+  "Proposal/Price Quote",
+  "Negotiation/Review",
+  "Closed Won",
+  "Closed Lost"
+];
+
+const message = document.getElementById("message");
+const productRows = document.getElementById("productRows");
+const submitBtn = document.getElementById("submitBtn");
+const saveOppBtn = document.getElementById("saveOppBtn");
+
+const oppNameEl = document.getElementById("oppName");
+const oppStageEl = document.getElementById("oppStage");
+const oppAmountEl = document.getElementById("oppAmount");
+const oppCloseDateEl = document.getElementById("oppCloseDate");
+const oppNextStepEl = document.getElementById("oppNextStep");
+const oppDescriptionEl = document.getElementById("oppDescription");
+
+function showMessage(text, type) {
+  message.hidden = false;
+  message.className = "toast toast--" + (type || "info");
+  message.innerText = text;
+}
+
+function formatCurrency(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return "$" + Number(value).toLocaleString();
+}
+
+function getOpportunityId() {
+  const urlParams = new URLSearchParams(window.location.search);
+
+  const idFromUrl = urlParams.get("id");
+  if (idFromUrl && idFromUrl.startsWith("006")) {
+    return idFromUrl;
+  }
+
+  if (environment.recordId && environment.recordId.startsWith("006")) {
+    return environment.recordId;
+  }
+
+  if (environment.record && environment.record.Id && environment.record.Id.startsWith("006")) {
+    return environment.record.Id;
+  }
+
+  if (environment.parameters && typeof environment.parameters === "string") {
+    if (environment.parameters.startsWith("006")) {
+      return environment.parameters;
+    }
+
+    try {
+      const parsed = JSON.parse(environment.parameters.replace(/&quot;/g, '"'));
+      if (parsed.oppId && parsed.oppId.startsWith("006")) {
+        return parsed.oppId;
+      }
+    } catch (e) {}
+  }
+
+  if (
+    environment.parameters &&
+    typeof environment.parameters === "object" &&
+    environment.parameters.oppId
+  ) {
+    return environment.parameters.oppId;
+  }
+
+  return null;
+}
+
+const opportunityId = getOpportunityId();
+document.getElementById("oppId").innerText = opportunityId || "Not found";
+
+function canvasAjax(path, method, body, callback) {
+  Sfdc.canvas.client.ajax(path, {
+    client: client,
+    method: method || "GET",
+    contentType: "application/json",
+    data: body ? JSON.stringify(body) : null,
+    success: function(data) {
+      callback(null, data.payload);
+    },
+    failure: function(data) {
+      console.error("Canvas AJAX failure:", data);
+      callback(data);
+    }
+  });
+}
+
+function buildStageOptions(currentStage) {
+  const stages = STAGES.slice();
+  if (currentStage && stages.indexOf(currentStage) === -1) {
+    stages.unshift(currentStage);
+  }
+
+  oppStageEl.innerHTML = stages
+    .map(function(s) {
+      const selected = s === currentStage ? " selected" : "";
+      return '<option value="' + escapeHtmlClient(s) + '"' + selected + ">" +
+        escapeHtmlClient(s) + "</option>";
+    })
+    .join("");
+}
+
+function populateOpportunityForm(opp) {
+  oppNameEl.value = opp.Name || "";
+  buildStageOptions(opp.StageName || "");
+  oppAmountEl.value = formatCurrency(opp.Amount);
+  oppCloseDateEl.value = opp.CloseDate || "";
+  oppNextStepEl.value = opp.NextStep || "";
+  oppDescriptionEl.value = opp.Description || "";
+}
+
+function refreshAmount() {
+  canvasAjax(
+    API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId) + "?fields=Amount",
+    "GET",
+    null,
+    function(err, opp) {
+      if (!err) oppAmountEl.value = formatCurrency(opp.Amount);
+    }
+  );
+}
+
+function loadOpportunity() {
+  if (!opportunityId) {
+    showMessage("Could not determine Opportunity Id from Canvas context or URL.", "error");
+    return;
+  }
+
+  showMessage("Loading Opportunity\u2026", "info");
+
+  canvasAjax(
+    API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId) +
+      "?fields=Id,Name,StageName,Amount,CloseDate,NextStep,Description,Pricebook2Id",
+    "GET",
+    null,
+    function(err, opp) {
+      if (err) {
+        showMessage("Failed to read Opportunity. Check browser console.", "error");
+        return;
+      }
+
+      populateOpportunityForm(opp);
+
+      if (!opp.Pricebook2Id) {
+        productRows.innerHTML =
+          '<tr class="empty-row"><td colspan="4">No Price Book on this Opportunity. Add the Standard Price Book first.</td></tr>';
+        showMessage("Opportunity loaded. Add a Price Book to see products.", "info");
+        return;
+      }
+
+      loadProducts(opp.Pricebook2Id);
+    }
+  );
+}
+
+function loadProducts(pricebookId) {
+  const soql =
+    "SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode " +
+    "FROM PricebookEntry " +
+    "WHERE IsActive = true " +
+    "AND Product2.IsActive = true " +
+    "AND Pricebook2Id = '" + pricebookId + "' " +
+    "ORDER BY Product2.Name";
+
+  canvasAjax(
+    API + "/query?q=" + encodeURIComponent(soql),
+    "GET",
+    null,
+    function(err, result) {
+      if (err) {
+        showMessage("Failed to load products. Check browser console.", "error");
+        return;
+      }
+
+      if (!result.records || result.records.length === 0) {
+        productRows.innerHTML =
+          '<tr class="empty-row"><td colspan="4">No active products found for this Price Book.</td></tr>';
+        showMessage("Opportunity loaded. No products in this Price Book.", "info");
+        return;
+      }
+
+      productRows.innerHTML = result.records.map(function(p) {
+        return `
+          <tr>
+            <td class="col-select">
+              <input type="checkbox" data-pbe="${p.Id}" data-price="${p.UnitPrice}" />
+            </td>
+            <td>${escapeHtmlClient(p.Product2.Name)}</td>
+            <td>${formatCurrency(p.UnitPrice)}</td>
+            <td class="col-qty">
+              <input type="number" min="1" value="1" class="qty" data-qty="${p.Id}" />
+            </td>
+          </tr>
+        `;
+      }).join("");
+
+      showMessage("Opportunity and products loaded.", "success");
+    }
+  );
+}
+
+saveOppBtn.addEventListener("click", function() {
+  if (!opportunityId) {
+    showMessage("No Opportunity Id available.", "error");
+    return;
+  }
+
+  const body = {
+    StageName: oppStageEl.value,
+    NextStep: oppNextStepEl.value,
+    Description: oppDescriptionEl.value
+  };
+
+  if (oppCloseDateEl.value) {
+    body.CloseDate = oppCloseDateEl.value;
+  }
+
+  saveOppBtn.disabled = true;
+  showMessage("Saving Opportunity fields\u2026", "info");
+
+  canvasAjax(
+    API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId),
+    "PATCH",
+    body,
+    function(err) {
+      saveOppBtn.disabled = false;
+
+      if (err) {
+        showMessage("Failed to save Opportunity. Check browser console.", "error");
+        return;
+      }
+
+      showMessage("Opportunity fields synced to Salesforce. Refresh the record to confirm.", "success");
+    }
+  );
+});
+
+submitBtn.addEventListener("click", function() {
+  const selected = Array.from(
+    document.querySelectorAll("#productRows input[type='checkbox']:checked")
+  );
+
+  if (!selected.length) {
+    showMessage("Select at least one product.", "error");
+    return;
+  }
+
+  const records = selected.map(function(box) {
+    const pbeId = box.dataset.pbe;
+    const qtyInput = document.querySelector("[data-qty='" + pbeId + "']");
+
+    return {
+      attributes: { type: "OpportunityLineItem" },
+      OpportunityId: opportunityId,
+      PricebookEntryId: pbeId,
+      Quantity: Number(qtyInput.value || 1),
+      UnitPrice: Number(box.dataset.price)
+    };
+  });
+
+  submitBtn.disabled = true;
+  showMessage("Adding products to Salesforce\u2026", "info");
+
+  canvasAjax(
+    API + "/composite/sobjects",
+    "POST",
+    { allOrNone: true, records: records },
+    function(err, result) {
+      submitBtn.disabled = false;
+
+      if (err) {
+        showMessage("Failed to create Opportunity Products. Check browser console.", "error");
+        return;
+      }
+
+      console.log("Created records:", result);
+      refreshAmount();
+      showMessage(
+        records.length + " product(s) added. Amount updated. Refresh the Opportunity to confirm.",
+        "success"
+      );
+    }
+  );
+});
+
+function escapeHtmlClient(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+loadOpportunity();
+</script>
+</body>
+</html>
