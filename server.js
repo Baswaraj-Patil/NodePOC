@@ -108,6 +108,16 @@ function renderHtml(signedRequestJson) {
       <strong id="oppId">Loading...</strong>
     </p>
 
+    <div id="oppPanel" class="opp-panel">
+      <h3>Opportunity (live from Salesforce)</h3>
+      <ul>
+        <li>Name: <strong id="fldName">-</strong></li>
+        <li>Stage: <strong id="fldStage">-</strong></li>
+        <li>Amount: <strong id="fldAmount">-</strong></li>
+        <li>Close Date: <strong id="fldCloseDate">-</strong></li>
+      </ul>
+    </div>
+
     <table>
       <thead>
         <tr>
@@ -199,6 +209,31 @@ function canvasAjax(path, method, body, callback) {
   });
 }
 
+function formatCurrency(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return "$" + Number(value).toLocaleString();
+}
+
+function populateOpportunityPanel(opp) {
+  document.getElementById("fldName").innerText = opp.Name || "-";
+  document.getElementById("fldStage").innerText = opp.StageName || "-";
+  document.getElementById("fldAmount").innerText = formatCurrency(opp.Amount);
+  document.getElementById("fldCloseDate").innerText = opp.CloseDate || "-";
+}
+
+function refreshOpportunityPanel() {
+  canvasAjax(
+    "/services/data/v60.0/sobjects/Opportunity/" +
+      encodeURIComponent(opportunityId) +
+      "?fields=Id,Name,StageName,Amount,CloseDate",
+    "GET",
+    null,
+    function(err, opp) {
+      if (!err) populateOpportunityPanel(opp);
+    }
+  );
+}
+
 function loadProducts() {
   if (!opportunityId) {
     showMessage("Could not determine Opportunity Id from Canvas context or URL.", "error");
@@ -210,7 +245,7 @@ function loadProducts() {
   canvasAjax(
     "/services/data/v60.0/sobjects/Opportunity/" +
       encodeURIComponent(opportunityId) +
-      "?fields=Id,Name,Pricebook2Id",
+      "?fields=Id,Name,StageName,Amount,CloseDate,Pricebook2Id",
     "GET",
     null,
     function(err, opp) {
@@ -218,6 +253,8 @@ function loadProducts() {
         showMessage("Failed to read Opportunity. Check browser console.", "error");
         return;
       }
+
+      populateOpportunityPanel(opp);
 
       if (!opp.Pricebook2Id) {
         showMessage("This Opportunity does not have a Price Book. Add Standard Price Book first.", "error");
@@ -302,6 +339,10 @@ submitBtn.addEventListener("click", function() {
     };
   });
 
+  const totalAmount = records.reduce(function(sum, r) {
+    return sum + r.Quantity * r.UnitPrice;
+  }, 0);
+
   showMessage("Sending products to Salesforce...", "");
 
   canvasAjax(
@@ -317,8 +358,39 @@ submitBtn.addEventListener("click", function() {
         return;
       }
 
-      showMessage("Products added successfully. Refresh the Opportunity page.", "success");
       console.log("Created records:", result);
+      showMessage("Products added. Syncing Opportunity fields...", "");
+
+      const stamp =
+        "Priced via external pricing service on " +
+        new Date().toISOString().slice(0, 10) +
+        ". Selected " + records.length + " product(s), total " +
+        formatCurrency(totalAmount) + ".";
+
+      canvasAjax(
+        "/services/data/v60.0/sobjects/Opportunity/" +
+          encodeURIComponent(opportunityId),
+        "PATCH",
+        {
+          Description: stamp,
+          NextStep: "Review externally priced products"
+        },
+        function(patchErr) {
+          if (patchErr) {
+            showMessage(
+              "Products added, but Opportunity field sync failed. Check browser console.",
+              "error"
+            );
+            return;
+          }
+
+          refreshOpportunityPanel();
+          showMessage(
+            "Products added and Opportunity fields synced. Refresh the Opportunity page.",
+            "success"
+          );
+        }
+      );
     }
   );
 });
