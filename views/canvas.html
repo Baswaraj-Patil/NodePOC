@@ -16,12 +16,12 @@
         <div class="brand-mark">PE</div>
         <div class="brand-text">
           <h1>Pricing Engine</h1>
-          <p class="subtitle ">External pricing app &middot; Salesforce Canvas</p>
+          <p class="subtitle">External pricing app &middot; Salesforce Canvas</p>
         </div>
       </div>
       <div class="opp-meta">
-        <span class="meta-label">Opportunity Id</span>
-        <span id="oppId" class="meta-value">Loading&hellip;</span>
+        <span class="meta-label">Account Name</span>
+        <span id="headerAccountName" class="meta-value meta-value--name">Loading&hellip;</span>
       </div>
     </header>
 
@@ -34,11 +34,6 @@
       </div>
 
       <div class="form-grid">
-        <label class="field">
-          <span class="field-label">Account Name</span>
-          <input id="oppAccountName" type="text" readonly />
-        </label>
-
         <label class="field">
           <span class="field-label">Name</span>
           <input id="oppName" type="text" readonly />
@@ -101,7 +96,7 @@ const message = document.getElementById("message");
 const productRows = document.getElementById("productRows");
 const submitBtn = document.getElementById("submitBtn");
 
-const oppAccountNameEl = document.getElementById("oppAccountName");
+const headerAccountNameEl = document.getElementById("headerAccountName");
 const oppNameEl = document.getElementById("oppName");
 const oppStageEl = document.getElementById("oppStage");
 const oppAmountEl = document.getElementById("oppAmount");
@@ -159,7 +154,6 @@ function getOpportunityId() {
 }
 
 const opportunityId = getOpportunityId();
-document.getElementById("oppId").innerText = opportunityId || "Not found";
 
 function canvasAjax(path, method, body, callback) {
   Sfdc.canvas.client.ajax(path, {
@@ -178,7 +172,7 @@ function canvasAjax(path, method, body, callback) {
 }
 
 function populateOpportunityForm(opp) {
-  oppAccountNameEl.value = (opp.Account && opp.Account.Name) || "";
+  headerAccountNameEl.innerText = (opp.Account && opp.Account.Name) || "—";
   oppNameEl.value = opp.Name || "";
   oppStageEl.value = opp.StageName || "";
   oppAmountEl.value = formatCurrency(opp.Amount);
