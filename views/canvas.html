@@ -16,7 +16,7 @@
         <div class="brand-mark">PE</div>
         <div class="brand-text">
           <h1>Pricing Engine</h1>
-          <p class="subtitle">External pricing app &middot; Salesforce Canvas</p>
+          <p class="subtitle ">External pricing app &middot; Salesforce Canvas</p>
         </div>
       </div>
       <div class="opp-meta">
@@ -57,16 +57,6 @@
         <label class="field">
           <span class="field-label">Close Date</span>
           <input id="oppCloseDate" type="text" readonly />
-        </label>
-
-        <label class="field">
-          <span class="field-label">Next Step</span>
-          <input id="oppNextStep" type="text" readonly />
-        </label>
-
-        <label class="field field-wide">
-          <span class="field-label">Description</span>
-          <textarea id="oppDescription" rows="3" readonly></textarea>
         </label>
       </div>
     </section>
@@ -116,8 +106,6 @@ const oppNameEl = document.getElementById("oppName");
 const oppStageEl = document.getElementById("oppStage");
 const oppAmountEl = document.getElementById("oppAmount");
 const oppCloseDateEl = document.getElementById("oppCloseDate");
-const oppNextStepEl = document.getElementById("oppNextStep");
-const oppDescriptionEl = document.getElementById("oppDescription");
 
 function showMessage(text, type) {
   message.hidden = false;
@@ -195,8 +183,6 @@ function populateOpportunityForm(opp) {
   oppStageEl.value = opp.StageName || "";
   oppAmountEl.value = formatCurrency(opp.Amount);
   oppCloseDateEl.value = opp.CloseDate || "";
-  oppNextStepEl.value = opp.NextStep || "";
-  oppDescriptionEl.value = opp.Description || "";
 }
 
 function refreshAmount() {
@@ -220,7 +206,7 @@ function loadOpportunity() {
 
   canvasAjax(
     API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId) +
-      "?fields=Id,Name,StageName,Amount,CloseDate,NextStep,Description,Pricebook2Id,Account.Name",
+      "?fields=Id,Name,StageName,Amount,CloseDate,Pricebook2Id,Account.Name",
     "GET",
     null,
     function(err, opp) {
