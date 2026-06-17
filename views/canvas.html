@@ -30,10 +30,15 @@
     <section class="card">
       <div class="card-head">
         <h2>Opportunity</h2>
-        <span class="card-hint">Edit fields and sync back to Salesforce</span>
+        <span class="card-hint">Read-only fields from Salesforce</span>
       </div>
 
       <div class="form-grid">
+        <label class="field">
+          <span class="field-label">Account Name</span>
+          <input id="oppAccountName" type="text" readonly />
+        </label>
+
         <label class="field">
           <span class="field-label">Name</span>
           <input id="oppName" type="text" readonly />
@@ -41,7 +46,7 @@
 
         <label class="field">
           <span class="field-label">Stage</span>
-          <select id="oppStage"></select>
+          <input id="oppStage" type="text" readonly />
         </label>
 
         <label class="field">
@@ -51,22 +56,18 @@
 
         <label class="field">
           <span class="field-label">Close Date</span>
-          <input id="oppCloseDate" type="date" />
+          <input id="oppCloseDate" type="text" readonly />
         </label>
 
         <label class="field">
           <span class="field-label">Next Step</span>
-          <input id="oppNextStep" type="text" placeholder="e.g. Review pricing" />
+          <input id="oppNextStep" type="text" readonly />
         </label>
 
         <label class="field field-wide">
           <span class="field-label">Description</span>
-          <textarea id="oppDescription" rows="3" placeholder="Notes synced from the pricing engine"></textarea>
+          <textarea id="oppDescription" rows="3" readonly></textarea>
         </label>
-      </div>
-
-      <div class="card-actions">
-        <button id="saveOppBtn" class="btn btn-primary">Save Opportunity</button>
       </div>
     </section>
 
@@ -105,24 +106,12 @@ const context = sr.context || {};
 const environment = context.environment || {};
 
 const API = "/services/data/v60.0";
-const STAGES = [
-  "Prospecting",
-  "Qualification",
-  "Needs Analysis",
-  "Value Proposition",
-  "Id. Decision Makers",
-  "Perception Analysis",
-  "Proposal/Price Quote",
-  "Negotiation/Review",
-  "Closed Won",
-  "Closed Lost"
-];
 
 const message = document.getElementById("message");
 const productRows = document.getElementById("productRows");
 const submitBtn = document.getElementById("submitBtn");
-const saveOppBtn = document.getElementById("saveOppBtn");
 
+const oppAccountNameEl = document.getElementById("oppAccountName");
 const oppNameEl = document.getElementById("oppName");
 const oppStageEl = document.getElementById("oppStage");
 const oppAmountEl = document.getElementById("oppAmount");
@@ -200,24 +189,10 @@ function canvasAjax(path, method, body, callback) {
   });
 }
 
-function buildStageOptions(currentStage) {
-  const stages = STAGES.slice();
-  if (currentStage && stages.indexOf(currentStage) === -1) {
-    stages.unshift(currentStage);
-  }
-
-  oppStageEl.innerHTML = stages
-    .map(function(s) {
-      const selected = s === currentStage ? " selected" : "";
-      return '<option value="' + escapeHtmlClient(s) + '"' + selected + ">" +
-        escapeHtmlClient(s) + "</option>";
-    })
-    .join("");
-}
-
 function populateOpportunityForm(opp) {
+  oppAccountNameEl.value = (opp.Account && opp.Account.Name) || "";
   oppNameEl.value = opp.Name || "";
-  buildStageOptions(opp.StageName || "");
+  oppStageEl.value = opp.StageName || "";
   oppAmountEl.value = formatCurrency(opp.Amount);
   oppCloseDateEl.value = opp.CloseDate || "";
   oppNextStepEl.value = opp.NextStep || "";
@@ -245,7 +220,7 @@ function loadOpportunity() {
 
   canvasAjax(
     API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId) +
-      "?fields=Id,Name,StageName,Amount,CloseDate,NextStep,Description,Pricebook2Id",
+      "?fields=Id,Name,StageName,Amount,CloseDate,NextStep,Description,Pricebook2Id,Account.Name",
     "GET",
     null,
     function(err, opp) {
@@ -314,42 +289,6 @@ function loadProducts(pricebookId) {
   );
 }
 
-saveOppBtn.addEventListener("click", function() {
-  if (!opportunityId) {
-    showMessage("No Opportunity Id available.", "error");
-    return;
-  }
-
-  const body = {
-    StageName: oppStageEl.value,
-    NextStep: oppNextStepEl.value,
-    Description: oppDescriptionEl.value
-  };
-
-  if (oppCloseDateEl.value) {
-    body.CloseDate = oppCloseDateEl.value;
-  }
-
-  saveOppBtn.disabled = true;
-  showMessage("Saving Opportunity fields\u2026", "info");
-
-  canvasAjax(
-    API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId),
-    "PATCH",
-    body,
-    function(err) {
-      saveOppBtn.disabled = false;
-
-      if (err) {
-        showMessage("Failed to save Opportunity. Check browser console.", "error");
-        return;
-      }
-
-      showMessage("Opportunity fields synced to Salesforce. Refresh the record to confirm.", "success");
-    }
-  );
-});
-
 submitBtn.addEventListener("click", function() {
   const selected = Array.from(
     document.querySelectorAll("#productRows input[type='checkbox']:checked")
@@ -389,6 +328,25 @@ submitBtn.addEventListener("click", function() {
       }
 
       console.log("Created records:", result);
+
+      selected.forEach(function(box) {
+        const pbeId = box.dataset.pbe;
+        const row = box.closest("tr");
+        const qtyInput = document.querySelector("[data-qty='" + pbeId + "']");
+
+        box.checked = false;
+        box.disabled = true;
+        if (qtyInput) qtyInput.disabled = true;
+
+        if (row && !row.querySelector(".added-badge")) {
+          row.classList.add("row-added");
+          const productCell = row.querySelector("td:nth-child(2)");
+          if (productCell) {
+            productCell.insertAdjacentHTML("beforeend", ' <span class="added-badge">Added</span>');
+          }
+        }
+      });
+
       refreshAmount();
       showMessage(
         records.length + " product(s) added. Amount updated. Refresh the Opportunity to confirm.",
