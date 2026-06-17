@@ -98,6 +98,11 @@ body {
   font-weight: 600;
 }
 
+.meta-value--name {
+  font-family: inherit;
+  font-size: 15px;
+}
+
 /* Cards */
 .card {
   background: var(--card);
