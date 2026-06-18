@@ -1,3 +1,11 @@
+/*
+ * Styles for the Pricing Engine Canvas UI (views/canvas.html).
+ * Layout: page → header → toast → Opportunity card → Products card.
+ * Includes color tokens, card/form/table styling, toast variants, and the
+ * post-submit "added row" treatment.
+ */
+
+/* Design tokens (palette + neutrals). Paired *-bg colors back the toast variants. */
 :root {
   --brand: #0176d3;
   --brand-dark: #014486;
@@ -188,6 +196,7 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(1, 118, 211, 0.15);
 }
 
+/* Visual cue that Opportunity fields are display-only (server is the source of truth). */
 input[readonly],
 textarea[readonly] {
   background: #f4f6f9;
@@ -315,6 +324,7 @@ tbody tr:hover {
   border-left-color: var(--info);
 }
 
+/* Narrow viewports: collapse the form to a single column and stack the header. */
 @media (max-width: 640px) {
   .form-grid {
     grid-template-columns: 1fr;
@@ -330,6 +340,8 @@ tbody tr:hover {
   }
 }
 
+/* Post-submit row treatment: applied by canvas.html after an OLI is created
+   for that PricebookEntry to make "this product was just added" obvious. */
 .row-added {
   background: var(--success-bg);
 }
@@ -348,5 +360,5 @@ tbody tr:hover {
   text-transform: uppercase;
   color: var(--success);
   background: #d6f1e1;
-  border-radius: 999px;
+  border-radius: 999px; /* fully rounded pill */
 }
