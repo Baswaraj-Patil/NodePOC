@@ -1,3 +1,8 @@
+<!--
+  Pricing Engine UI rendered inside the Salesforce Canvas iframe.
+  Server-side, server.js replaces __SIGNED_REQUEST_JSON__ with the verified
+  Canvas payload (OAuth token + record context) before sending this HTML.
+-->
 <!doctype html>
 <html>
 <head>
@@ -6,7 +11,8 @@
   <title>Pricing Engine</title>
   <link rel="stylesheet" href="/public/app.css" />
 
-  <!-- Salesforce Canvas SDK -->
+  <!-- Salesforce Canvas SDK: provides Sfdc.canvas.client.ajax for REST calls
+       authenticated by the signed-request OAuth token. -->
   <script src="https://login.salesforce.com/canvas/sdk/js/canvas-all.js"></script>
 </head>
 <body>
@@ -25,8 +31,10 @@
       </div>
     </header>
 
+    <!-- Status toast; populated by showMessage() with info/success/error variants. -->
     <div id="message" class="toast" hidden></div>
 
+    <!-- Opportunity context card: display-only mirror of fields read from Salesforce. -->
     <section class="card">
       <div class="card-head">
         <h2>Opportunity</h2>
@@ -56,6 +64,8 @@
       </div>
     </section>
 
+    <!-- Products card: rows populated from the Opportunity's PricebookEntries.
+         Selected rows + quantities are written back as OpportunityLineItems on Submit. -->
     <section class="card">
       <div class="card-head">
         <h2>Products</h2>
@@ -85,11 +95,15 @@
   </div>
 
 <script>
+// __SIGNED_REQUEST_JSON__ is replaced server-side by server.js#renderHtml with
+// the decoded Canvas payload. `<` characters inside it are escaped to \u003c
+// to keep a malicious value from breaking out of this <script> tag.
 const sr = __SIGNED_REQUEST_JSON__;
-const client = sr.client;
+const client = sr.client;                    // OAuth token + instanceUrl used by Canvas SDK
 const context = sr.context || {};
-const environment = context.environment || {};
+const environment = context.environment || {}; // Holds recordId and other record context
 
+// REST API version is pinned: changes can break field/relationship behavior.
 const API = "/services/data/v60.0";
 
 const message = document.getElementById("message");
@@ -102,6 +116,7 @@ const oppStageEl = document.getElementById("oppStage");
 const oppAmountEl = document.getElementById("oppAmount");
 const oppCloseDateEl = document.getElementById("oppCloseDate");
 
+// Render a status toast. `type` is one of "info" | "success" | "error".
 function showMessage(text, type) {
   message.hidden = false;
   message.className = "toast toast--" + (type || "info");
@@ -113,6 +128,13 @@ function formatCurrency(value) {
   return "$" + Number(value).toLocaleString();
 }
 
+// Defensive resolver for the Opportunity Id. Tries multiple sources because
+// Canvas may deliver the record context differently depending on how the
+// <apex:canvasApp> is configured (record-page binding vs `parameters="..."`).
+// Order: ?id query param  →  environment.recordId  →  environment.record.Id
+//        →  environment.parameters (string or JSON)  →  parameters object.
+// Every candidate is validated against the `006` Opportunity key prefix to
+// reject ids from the wrong sObject type.
 function getOpportunityId() {
   const urlParams = new URLSearchParams(window.location.search);
 
@@ -134,12 +156,16 @@ function getOpportunityId() {
       return environment.parameters;
     }
 
+    // `parameters` is sometimes delivered as HTML-encoded JSON
+    // (e.g. {&quot;oppId&quot;:&quot;006...&quot;}); unescape before parsing.
     try {
       const parsed = JSON.parse(environment.parameters.replace(/&quot;/g, '"'));
       if (parsed.oppId && parsed.oppId.startsWith("006")) {
         return parsed.oppId;
       }
-    } catch (e) {}
+    } catch (e) {
+      // Swallow parse errors; fall through to remaining lookup paths.
+    }
   }
 
   if (
@@ -155,6 +181,9 @@ function getOpportunityId() {
 
 const opportunityId = getOpportunityId();
 
+// Single wrapper around the Canvas SDK REST helper.
+// Passing `client` makes every call execute as the logged-in Salesforce user,
+// so FLS, sharing rules, validation rules, and required fields all apply.
 function canvasAjax(path, method, body, callback) {
   Sfdc.canvas.client.ajax(path, {
     client: client,
@@ -171,6 +200,8 @@ function canvasAjax(path, method, body, callback) {
   });
 }
 
+// Push the Opportunity REST response into the read-only UI fields.
+// Account.Name is read via the relationship field on the parent query.
 function populateOpportunityForm(opp) {
   headerAccountNameEl.innerText = (opp.Account && opp.Account.Name) || "—";
   oppNameEl.value = opp.Name || "";
@@ -179,6 +210,8 @@ function populateOpportunityForm(opp) {
   oppCloseDateEl.value = opp.CloseDate || "";
 }
 
+// Re-read Opportunity.Amount after line items are created. Amount is a rollup
+// on Salesforce once OLIs exist, so the new value is only visible via a re-fetch.
 function refreshAmount() {
   canvasAjax(
     API + "/sobjects/Opportunity/" + encodeURIComponent(opportunityId) + "?fields=Amount",
@@ -190,6 +223,7 @@ function refreshAmount() {
   );
 }
 
+// Page-load entry point: fetch Opportunity context, then trigger product load.
 function loadOpportunity() {
   if (!opportunityId) {
     showMessage("Could not determine Opportunity Id from Canvas context or URL.", "error");
@@ -211,6 +245,7 @@ function loadOpportunity() {
 
       populateOpportunityForm(opp);
 
+      // Without a Price Book on the Opportunity we cannot list PricebookEntries.
       if (!opp.Pricebook2Id) {
         productRows.innerHTML =
           '<tr class="empty-row"><td colspan="4">No Price Book on this Opportunity. Add the Standard Price Book first.</td></tr>';
@@ -223,7 +258,11 @@ function loadOpportunity() {
   );
 }
 
+// Load active PricebookEntries for the given Pricebook and render product rows.
 function loadProducts(pricebookId) {
+  // SOQL is built via string interpolation; risk is low because `pricebookId`
+  // comes from Salesforce itself (Opportunity.Pricebook2Id), not user input.
+  // Could be hardened with bind variables / a typed wrapper if needed.
   const soql =
     "SELECT Id, UnitPrice, Product2.Id, Product2.Name, Product2.ProductCode " +
     "FROM PricebookEntry " +
@@ -269,6 +308,8 @@ function loadProducts(pricebookId) {
   );
 }
 
+// Submit handler: collects checked rows, builds OpportunityLineItem payloads,
+// and posts them in a single atomic composite request.
 submitBtn.addEventListener("click", function() {
   const selected = Array.from(
     document.querySelectorAll("#productRows input[type='checkbox']:checked")
@@ -279,6 +320,8 @@ submitBtn.addEventListener("click", function() {
     return;
   }
 
+  // UnitPrice is read straight from the PricebookEntry. In a real build this
+  // would come from the external pricing service instead.
   const records = selected.map(function(box) {
     const pbeId = box.dataset.pbe;
     const qtyInput = document.querySelector("[data-qty='" + pbeId + "']");
@@ -295,6 +338,7 @@ submitBtn.addEventListener("click", function() {
   submitBtn.disabled = true;
   showMessage("Adding products to Salesforce\u2026", "info");
 
+  // allOrNone: true → if any record fails, the whole batch is rolled back.
   canvasAjax(
     API + "/composite/sobjects",
     "POST",
@@ -309,6 +353,10 @@ submitBtn.addEventListener("click", function() {
 
       console.log("Created records:", result);
 
+      // Mark each successfully added row: green highlight + "Added" badge,
+      // and lock the checkbox/quantity so it cannot be submitted twice.
+      // Note: this only tracks rows added in the current session, not OLIs
+      // that already exist on the Opportunity.
       selected.forEach(function(box) {
         const pbeId = box.dataset.pbe;
         const row = box.closest("tr");
@@ -336,6 +384,8 @@ submitBtn.addEventListener("click", function() {
   );
 });
 
+// HTML-entity escape for any Salesforce-sourced text injected into table HTML
+// via template literals (currently product names). Prevents stored XSS.
 function escapeHtmlClient(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -345,6 +395,7 @@ function escapeHtmlClient(value) {
     .replace(/'/g, "&#039;");
 }
 
+// Kick everything off on script execution.
 loadOpportunity();
 </script>
 </body>
